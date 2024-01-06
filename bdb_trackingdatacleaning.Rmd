@@ -1,0 +1,72 @@
+---
+title: "Tracking Data Import / Cleaning"
+author: "Matthew Kraus"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, message = FALSE, warning = FALSE)
+```
+
+```{r Libraries}
+library(tidyverse)
+library(data.table)
+```
+
+```{r Data Import}
+games <- data.table(read_csv("games.csv", show_col_types = F))
+players <- data.table(read_csv("players.csv", show_col_types = F))
+plays <- data.table(read_csv("plays.csv", show_col_types = F))
+tackles <- data.table(read_csv("tackles.csv", show_col_types = F))
+tracking_week1 <- data.table(read_csv("tracking_week_1.csv", show_col_types = F))
+tracking_week1[, Week := 1]
+tracking_week2 <- data.table(read_csv("tracking_week_2.csv", show_col_types = F))
+tracking_week2[, Week := 2]
+tracking_week3 <- data.table(read_csv("tracking_week_3.csv", show_col_types = F))
+tracking_week3[, Week := 3]
+tracking_week4 <- data.table(read_csv("tracking_week_4.csv", show_col_types = F))
+tracking_week4[, Week := 4]
+tracking_week5 <- data.table(read_csv("tracking_week_5.csv", show_col_types = F))
+tracking_week5[, Week := 5]
+tracking_week6 <- data.table(read_csv("tracking_week_6.csv", show_col_types = F))
+tracking_week6[, Week := 6]
+tracking_week7 <- data.table(read_csv("tracking_week_7.csv", show_col_types = F))
+tracking_week7[, Week := 7]
+tracking_week8 <- data.table(read_csv("tracking_week_8.csv", show_col_types = F))
+tracking_week8[, Week := 8]
+tracking_week9 <- data.table(read_csv("tracking_week_9.csv", show_col_types = F))
+tracking_week9[, Week := 9]
+```
+
+```{r Combine Data / Add Team Variables}
+fulltracking <- rbind(tracking_week1, tracking_week2, tracking_week3, tracking_week4, tracking_week5, tracking_week6, tracking_week7, tracking_week8, tracking_week9)
+
+fulltracking1 <- left_join(fulltracking, games[, c("gameId", "homeTeamAbbr", "visitorTeamAbbr")], by = "gameId")
+fulltracking1[, team := ifelse(club == homeTeamAbbr, "home",
+                               ifelse(club == "football", "ball", "away"))]
+fulltracking1[, opp_team := ifelse(club == homeTeamAbbr, "away",
+                                  ifelse(club == "football", "ball", "home"))]
+
+fulltracking1[, homeTeamAbbr := NULL]
+fulltracking1[, visitorTeamAbbr := NULL]
+
+tracking_week1a <- fulltracking1[Week == 1]
+tracking_week2a <- fulltracking1[Week == 2]
+tracking_week3a <- fulltracking1[Week == 3]
+tracking_week4a <- fulltracking1[Week == 4]
+tracking_week5a <- fulltracking1[Week == 5]
+tracking_week6a <- fulltracking1[Week == 6]
+tracking_week7a <- fulltracking1[Week == 7]
+tracking_week8a <- fulltracking1[Week == 8]
+tracking_week9a <- fulltracking1[Week == 9]
+
+# write.csv(tracking_week1a, file = "C:/Users/15622/Dropbox/PC/Desktop/Big Data Bowl 2024/tracking_week1a", row.names = F)
+# write.csv(tracking_week2a, file = "C:/Users/15622/Dropbox/PC/Desktop/Big Data Bowl 2024/tracking_week2a", row.names = F)
+# write.csv(tracking_week3a, file = "C:/Users/15622/Dropbox/PC/Desktop/Big Data Bowl 2024/tracking_week3a", row.names = F)
+# write.csv(tracking_week4a, file = "C:/Users/15622/Dropbox/PC/Desktop/Big Data Bowl 2024/tracking_week4a", row.names = F)
+# write.csv(tracking_week5a, file = "C:/Users/15622/Dropbox/PC/Desktop/Big Data Bowl 2024/tracking_week5a", row.names = F)
+# write.csv(tracking_week6a, file = "C:/Users/15622/Dropbox/PC/Desktop/Big Data Bowl 2024/tracking_week6a", row.names = F)
+# write.csv(tracking_week7a, file = "C:/Users/15622/Dropbox/PC/Desktop/Big Data Bowl 2024/tracking_week7a", row.names = F)
+# write.csv(tracking_week8a, file = "C:/Users/15622/Dropbox/PC/Desktop/Big Data Bowl 2024/tracking_week8a", row.names = F)
+# write.csv(tracking_week9a, file = "C:/Users/15622/Dropbox/PC/Desktop/Big Data Bowl 2024/tracking_week9a", row.names = F)
+```

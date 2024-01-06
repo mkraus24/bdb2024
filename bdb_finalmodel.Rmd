@@ -1,0 +1,313 @@
+---
+title: "BDB Model"
+author: "Matthew Kraus"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, message = FALSE, warning = FALSE)
+```
+
+```{r Libraries}
+library(tidyverse)
+library(tidymodels)
+library(data.table)
+library(vip)
+```
+
+```{r Data Import}
+tracking <- rbind(data.table(read_delim("tracking_week1a.txt", delim = ",", show_col_types = F)),
+                  data.table(read_delim("tracking_week2a.txt", delim = ",", show_col_types = F)),
+                  data.table(read_delim("tracking_week3a.txt", delim = ",", show_col_types = F)),
+                  data.table(read_delim("tracking_week4a.txt", delim = ",", show_col_types = F)),
+                  data.table(read_delim("tracking_week5a.txt", delim = ",", show_col_types = F)),
+                  data.table(read_delim("tracking_week6a.txt", delim = ",", show_col_types = F)),
+                  data.table(read_delim("tracking_week7a.txt", delim = ",", show_col_types = F)),
+                  data.table(read_delim("tracking_week8a.txt", delim = ",", show_col_types = F)),
+                  data.table(read_delim("tracking_week9a.txt", delim = ",", show_col_types = F)))
+tackles_plays <- data.table(read_csv("bdb_tacklesplays.csv", show_col_types = F))
+plays <- data.table(read_csv("plays.csv", show_col_types = F))
+players <- data.table(read_csv("players.csv", show_col_types = F))
+games <- data.table(read_csv("games.csv", show_col_types = F))
+
+load("C:/Users/15622/Dropbox/PC/Desktop/Big Data Bowl 2024/FinalModelData.RData")
+```
+
+```{r Clean Data}
+tklframe <- unique(finaldata[Event == "tackle", c("GameID", "PlayID", "FrameID")]) %>% rename(TklFrame = FrameID)
+rm(finaldata)
+
+weeks1thru6 <- games[week %in% 1:6]
+weeks7thru9 <- games[week %in% 7:9]
+
+tracking_players <- tracking[displayName != "football"]
+tracking_ball <- tracking[displayName == "football"]
+
+tracking_full <- left_join(tracking_players, tracking_ball[, c("gameId", "playId", "frameId", "x", "y", "s", "a", "dis")], by = c("gameId", "playId", "frameId")) %>% rename(x = x.x, y = y.x, s = s.x, a = a.x, x.ball = x.y, y.ball = y.y, s.ball = s.y, a.ball = a.y, dist.ball = dis.y, dist = dis.x)
+
+ballcarrier <- plays[, c("gameId", "playId", "ballCarrierId")]
+
+bctracking <- left_join(tracking_players, ballcarrier, by = c("gameId", "playId"))
+bctracking <- bctracking[nflId == ballCarrierId]
+bctracking <- bctracking[, c("gameId", "playId", "frameId", "x", "y", "s", "a", "dis", "o", "dir")] %>% rename(x.bc = x, y.bc = y, s.bc = s, a.bc = a, dist.bc = dis, o.bc = o, dir.bc = dir)
+
+tracking_full <- left_join(tracking_full, bctracking, by = c("gameId", "playId", "frameId"))
+
+rm(bctracking)
+
+tracking_full[, o := ifelse(playDirection == "left" & o < 180, o + 180,
+                            ifelse(playDirection == "left" & o >= 180, o - 180, o))]
+tracking_full[, dir := ifelse(playDirection == "left" & dir < 180, dir + 180,
+                            ifelse(playDirection == "left" & dir >= 180, dir - 180, dir))]
+tracking_full[, o.bc := ifelse(playDirection == "left" & o.bc < 180, o.bc + 180,
+                            ifelse(playDirection == "left" & o.bc >= 180, o.bc - 180, o.bc))]
+tracking_full[, dir.bc := ifelse(playDirection == "left" & dir.bc < 180, dir.bc + 180,
+                            ifelse(playDirection == "left" & dir.bc >= 180, dir.bc - 180, dir.bc))]
+
+tracking_full <- tracking_full[, !(c("playDirection"))]
+
+tracking_full[, DistToBC := ((x - x.bc)^2 + (y - y.bc)^2)^0.5]
+tracking_full[, DistToBall := ((x - x.ball)^2 + (y - y.ball)^2)^0.5]
+tracking_full[, SpeedDiffToBC := s - s.bc]
+tracking_full[, OrientationDifftoBC := ifelse(abs(o - o.bc) >= 180, 360 - abs(o - o.bc), abs(o - o.bc))]
+tracking_full[, DirectionDiffToBC := ifelse(abs(dir - dir.bc) >= 180, 360 - abs(dir - dir.bc), abs(dir - dir.bc))]
+
+rm(tracking, tracking_players, tracking_ball)
+
+tracking_full1 <- left_join(tracking_full, plays[, c("gameId", "playId", "possessionTeam")], by = c("gameId", "playId"))
+tracking_full1[, isOffense := ifelse(club == possessionTeam, 1, 0)]
+
+rm(tracking_full)
+
+tackles_plays1 <- tackles_plays[!(GameID == 2022091107 & PlayID == 1879 & TacklerID == 54479)]
+tackles_plays1 <- tackles_plays1[!(GameID == 2022100209 & PlayID == 1581 & FCDefenderID == 47790)]
+tackles_plays1 <- tackles_plays1[!(GameID == 2022103004 & PlayID == 2106 & FCDefenderID == 42441)]
+
+tkl_assist <- tackles_plays1[Tackle == 1 | Assist == 1, c("GameID", "PlayID", "TacklerID", "Tackle", "Assist")]
+only_assist <- tkl_assist[Assist == 1]
+missed_tkl <- tackles_plays1[MissedTackle == 1, c("GameID", "PlayID", "TacklerID", "MissedTackle")] %>% arrange(GameID, PlayID)
+
+two_assists <- left_join(tkl_assist, tkl_assist[Assist == 1], by = c("GameID", "PlayID"))
+two_assists <- two_assists[TacklerID.x != TacklerID.y & Assist.x == 1 & Assist.y == 1]
+two_assists <- data.table(two_assists %>% group_by(GameID, PlayID) %>% reframe(Assist1 = TacklerID.x, Assist2 = TacklerID.y))
+two_assists <- two_assists[duplicated(two_assists[, c("GameID", "PlayID")])]
+one_assist <- anti_join(only_assist[!duplicated(only_assist[, c("GameID", "PlayID")])], two_assists, by = c("GameID", "PlayID"))
+one_assist <- one_assist[, c("GameID", "PlayID", "TacklerID")] %>% rename(Assist1 = TacklerID)
+assists <- rbind(two_assists, one_assist, fill = T)
+assists[, Assist2 := ifelse(is.na(Assist2), 0, Assist2)]
+
+assists <- left_join(plays[, c("gameId", "playId")], assists, by = c("gameId" = "GameID", "playId" = "PlayID"))
+assists[, Assist1 := ifelse(is.na(Assist1), 0, Assist1)]
+assists[, Assist2 := ifelse(is.na(Assist2), 0, Assist2)]
+
+rm(two_assists, one_assist)
+
+players[, position := ifelse(position %in% c("DT", "NT"), "DT",
+                             ifelse(position %in% c("MLB", "ILB"), "ILB",
+                                    ifelse(position %in% c("FS", "SS"), "S",
+                                           ifelse(position == "DB", "OLB", position))))]
+
+tracking_full1 <- left_join(tracking_full1, players[, c("nflId", "position")], by = "nflId")
+tracking_full1 <- left_join(tracking_full1, tkl_assist[Tackle == 1, c("GameID", "PlayID", "TacklerID")], by = c("gameId" = "GameID", "playId" = "PlayID"))
+tracking_full1 <- left_join(tracking_full1, assists, by = c("gameId", "playId"))
+
+tracking_full1[, TacklerID := ifelse(is.na(TacklerID), 0, TacklerID)]
+
+tracking_full1 <- tracking_full1[!(TacklerID == 0 & Assist1 == 0)]
+
+tracking_full1[, Tackler := factor(ifelse(nflId == TacklerID | Assist1 == nflId | Assist2 == nflId, 1, 0))]
+```
+
+```{r Other Players Data at Each Frame}
+gameplayframe <- unique(tracking_full1[, c("gameId", "playId", "frameId")])
+
+offxvalues <- tracking_full1[isOffense == 1] %>% select(gameId, playId, frameId, nflId, x) %>% arrange(gameId, playId, frameId, nflId)
+offxvalues_byframe <- data.table(matrix(offxvalues$x, ncol = 11, byrow = T))
+colnames(offxvalues_byframe) <- c("o1.x", "o2.x", "o3.x", "o4.x", "o5.x", "o6.x", "o7.x", "o8.x", "o9.x", "o10.x", "o11.x")
+
+defxvalues <- tracking_full1[isOffense == 0] %>% select(gameId, playId, frameId, nflId, x) %>% arrange(gameId, playId, frameId, nflId)
+defxvalues_byframe <- data.table(matrix(defxvalues$x, ncol = 11, byrow = T))
+colnames(defxvalues_byframe) <- c("d1.x", "d2.x", "d3.x", "d4.x", "d5.x", "d6.x", "d7.x", "d8.x", "d9.x", "d10.x", "d11.x")
+
+offyvalues <- tracking_full1[isOffense == 1] %>% select(gameId, playId, frameId, nflId, y) %>% arrange(gameId, playId, frameId, nflId)
+offyvalues_byframe <- data.table(matrix(offyvalues$y, ncol = 11, byrow = T))
+colnames(offyvalues_byframe) <- c("o1.y", "o2.y", "o3.y", "o4.y", "o5.y", "o6.y", "o7.y", "o8.y", "o9.y", "o10.y", "o11.y")
+
+defyvalues <- tracking_full1[isOffense == 0] %>% select(gameId, playId, frameId, nflId, y) %>% arrange(gameId, playId, frameId, nflId)
+defyvalues_byframe <- data.table(matrix(defyvalues$y, ncol = 11, byrow = T))
+colnames(defyvalues_byframe) <- c("d1.y", "d2.y", "d3.y", "d4.y", "d5.y", "d6.y", "d7.y", "d8.y", "d9.y", "d10.y", "d11.y")
+
+offsvalues <- tracking_full1[isOffense == 1] %>% select(gameId, playId, frameId, nflId, s) %>% arrange(gameId, playId, frameId, nflId)
+offsvalues_byframe <- data.table(matrix(offsvalues$s, ncol = 11, byrow = T))
+colnames(offsvalues_byframe) <- c("o1.s", "o2.s", "o3.s", "o4.s", "o5.s", "o6.s", "o7.s", "o8.s", "o9.s", "o10.s", "o11.s")
+
+defsvalues <- tracking_full1[isOffense == 0] %>% select(gameId, playId, frameId, nflId, s) %>% arrange(gameId, playId, frameId, nflId)
+defsvalues_byframe <- data.table(matrix(defsvalues$s, ncol = 11, byrow = T))
+colnames(defsvalues_byframe) <- c("d1.s", "d2.s", "d3.s", "d4.s", "d5.s", "d6.s", "d7.s", "d8.s", "d9.s", "d10.s", "d11.s")
+
+offovalues <- tracking_full1[isOffense == 1] %>% select(gameId, playId, frameId, nflId, o) %>% arrange(gameId, playId, frameId, nflId)
+offovalues_byframe <- data.table(matrix(offovalues$o, ncol = 11, byrow = T))
+colnames(offovalues_byframe) <- c("o1.o", "o2.o", "o3.o", "o4.o", "o5.o", "o6.o", "o7.o", "o8.o", "o9.o", "o10.o", "o11.o")
+
+defovalues <- tracking_full1[isOffense == 0] %>% select(gameId, playId, frameId, nflId, o) %>% arrange(gameId, playId, frameId, nflId)
+defovalues_byframe <- data.table(matrix(defovalues$o, ncol = 11, byrow = T))
+colnames(defovalues_byframe) <- c("d1.o", "d2.o", "d3.o", "d4.o", "d5.o", "d6.o", "d7.o", "d8.o", "d9.o", "d10.o", "d11.o")
+
+fullotherplayersdata <- cbind(gameplayframe, offxvalues_byframe, defxvalues_byframe, offyvalues_byframe, defyvalues_byframe, offovalues_byframe, defovalues_byframe, offsvalues_byframe, defsvalues_byframe)
+
+rm(gameplayframe, offxvalues_byframe, defxvalues_byframe, offyvalues_byframe, defyvalues_byframe, offsvalues_byframe, defsvalues_byframe, offovalues_byframe, defovalues_byframe, offxvalues, defxvalues, offyvalues, defyvalues, offsvalues, defsvalues, offovalues, defovalues)
+```
+
+```{r Add Players Data / Clean}
+tracking_full1 <- left_join(tracking_full1, fullotherplayersdata, by = c("gameId", "playId", "frameId"))
+
+tracking_full1 <- tracking_full1[isOffense == 0]
+
+tracking_full1[, DistToO1 := ((x - o1.x)^2 + (y - o1.y)^2)^0.5]
+tracking_full1[, DistToO2 := ((x - o2.x)^2 + (y - o2.y)^2)^0.5]
+tracking_full1[, DistToO3 := ((x - o3.x)^2 + (y - o3.y)^2)^0.5]
+tracking_full1[, DistToO4 := ((x - o4.x)^2 + (y - o4.y)^2)^0.5]
+tracking_full1[, DistToO5 := ((x - o5.x)^2 + (y - o5.y)^2)^0.5]
+tracking_full1[, DistToO6 := ((x - o6.x)^2 + (y - o6.y)^2)^0.5]
+tracking_full1[, DistToO7 := ((x - o7.x)^2 + (y - o7.y)^2)^0.5]
+tracking_full1[, DistToO8 := ((x - o8.x)^2 + (y - o8.y)^2)^0.5]
+tracking_full1[, DistToO9 := ((x - o9.x)^2 + (y - o9.y)^2)^0.5]
+tracking_full1[, DistToO10 := ((x - o10.x)^2 + (y - o10.y)^2)^0.5]
+tracking_full1[, DistToO11 := ((x - o11.x)^2 + (y - o11.y)^2)^0.5]
+
+tracking_full1[, O1Within5Yards := ifelse(DistToO1 == DistToBC, 0,
+                                           ifelse(DistToO1 <= 5, 1, 0))]
+tracking_full1[, O2Within5Yards := ifelse(DistToO2 == DistToBC, 0,
+                                           ifelse(DistToO2 <= 5, 1, 0))]
+tracking_full1[, O3Within5Yards := ifelse(DistToO3 == DistToBC, 0,
+                                           ifelse(DistToO3 <= 5, 1, 0))]
+tracking_full1[, O4Within5Yards := ifelse(DistToO4 == DistToBC, 0,
+                                           ifelse(DistToO4 <= 5, 1, 0))]
+tracking_full1[, O5Within5Yards := ifelse(DistToO5 == DistToBC, 0,
+                                           ifelse(DistToO5 <= 5, 1, 0))]
+tracking_full1[, O6Within5Yards := ifelse(DistToO6 == DistToBC, 0,
+                                           ifelse(DistToO6 <= 5, 1, 0))]
+tracking_full1[, O7Within5Yards := ifelse(DistToO7 == DistToBC, 0,
+                                           ifelse(DistToO7 <= 5, 1, 0))]
+tracking_full1[, O8Within5Yards := ifelse(DistToO8 == DistToBC, 0,
+                                           ifelse(DistToO8 <= 5, 1, 0))]
+tracking_full1[, O9Within5Yards := ifelse(DistToO9 == DistToBC, 0,
+                                           ifelse(DistToO9 <= 5, 1, 0))]
+tracking_full1[, O10Within5Yards := ifelse(DistToO10 == DistToBC, 0,
+                                           ifelse(DistToO10 <= 5, 1, 0))]
+tracking_full1[, O11Within5Yards := ifelse(DistToO11 == DistToBC, 0,
+                                           ifelse(DistToO11 <= 5, 1, 0))]
+
+tracking_full1[, NonBCOffPlayersWithin5Yards := O1Within5Yards + O2Within5Yards + O3Within5Yards + O4Within5Yards + O5Within5Yards + O6Within5Yards + O7Within5Yards + O8Within5Yards + O9Within5Yards + O10Within5Yards + O11Within5Yards]
+
+tracking_full1[, D1DisttoBall := ((d1.x - x.ball)^2 + (d1.y - y.ball)^2)^0.5]
+tracking_full1[, D2DisttoBall := ((d2.x - x.ball)^2 + (d2.y - y.ball)^2)^0.5]
+tracking_full1[, D3DisttoBall := ((d3.x - x.ball)^2 + (d3.y - y.ball)^2)^0.5]
+tracking_full1[, D4DisttoBall := ((d4.x - x.ball)^2 + (d4.y - y.ball)^2)^0.5]
+tracking_full1[, D5DisttoBall := ((d5.x - x.ball)^2 + (d5.y - y.ball)^2)^0.5]
+tracking_full1[, D6DisttoBall := ((d6.x - x.ball)^2 + (d6.y - y.ball)^2)^0.5]
+tracking_full1[, D7DisttoBall := ((d7.x - x.ball)^2 + (d7.y - y.ball)^2)^0.5]
+tracking_full1[, D8DisttoBall := ((d8.x - x.ball)^2 + (d8.y - y.ball)^2)^0.5]
+tracking_full1[, D9DisttoBall := ((d9.x - x.ball)^2 + (d9.y - y.ball)^2)^0.5]
+tracking_full1[, D10DisttoBall := ((d10.x - x.ball)^2 + (d10.y - y.ball)^2)^0.5]
+tracking_full1[, D11DisttoBall := ((d11.x - x.ball)^2 + (d11.y - y.ball)^2)^0.5]
+
+tracking_full1[, D1ClosertoBall := ifelse(D1DisttoBall == DistToBall, 0,
+                                          ifelse(D1DisttoBall < DistToBall, 1, 0))]
+tracking_full1[, D2ClosertoBall := ifelse(D2DisttoBall == DistToBall, 0,
+                                          ifelse(D2DisttoBall < DistToBall, 1, 0))]
+tracking_full1[, D3ClosertoBall := ifelse(D3DisttoBall == DistToBall, 0,
+                                          ifelse(D3DisttoBall < DistToBall, 1, 0))]
+tracking_full1[, D4ClosertoBall := ifelse(D4DisttoBall == DistToBall, 0,
+                                          ifelse(D4DisttoBall < DistToBall, 1, 0))]
+tracking_full1[, D5ClosertoBall := ifelse(D5DisttoBall == DistToBall, 0,
+                                          ifelse(D5DisttoBall < DistToBall, 1, 0))]
+tracking_full1[, D6ClosertoBall := ifelse(D6DisttoBall == DistToBall, 0,
+                                          ifelse(D6DisttoBall < DistToBall, 1, 0))]
+tracking_full1[, D7ClosertoBall := ifelse(D7DisttoBall == DistToBall, 0,
+                                          ifelse(D7DisttoBall < DistToBall, 1, 0))]
+tracking_full1[, D8ClosertoBall := ifelse(D8DisttoBall == DistToBall, 0,
+                                          ifelse(D8DisttoBall < DistToBall, 1, 0))]
+tracking_full1[, D9ClosertoBall := ifelse(D9DisttoBall == DistToBall, 0,
+                                          ifelse(D9DisttoBall < DistToBall, 1, 0))]
+tracking_full1[, D10ClosertoBall := ifelse(D10DisttoBall == DistToBall, 0,
+                                          ifelse(D10DisttoBall < DistToBall, 1, 0))]
+tracking_full1[, D11ClosertoBall := ifelse(D11DisttoBall == DistToBall, 0,
+                                          ifelse(D11DisttoBall < DistToBall, 1, 0))]
+tracking_full1[, DefendersClosertoBall := D1ClosertoBall + D2ClosertoBall + D3ClosertoBall + D4ClosertoBall + D5ClosertoBall + D6ClosertoBall + D7ClosertoBall + D8ClosertoBall + D9ClosertoBall + D10ClosertoBall + D11ClosertoBall]
+
+tracking_full1[, OrientationDiffToO1 := ifelse(abs(o - o1.o) >= 180, 360 - abs(o - o1.o), abs(o - o1.o))]
+tracking_full1[, OrientationDiffToO2 := ifelse(abs(o - o2.o) >= 180, 360 - abs(o - o2.o), abs(o - o2.o))]
+tracking_full1[, OrientationDiffToO3 := ifelse(abs(o - o3.o) >= 180, 360 - abs(o - o3.o), abs(o - o3.o))]
+tracking_full1[, OrientationDiffToO4 := ifelse(abs(o - o4.o) >= 180, 360 - abs(o - o4.o), abs(o - o4.o))]
+tracking_full1[, OrientationDiffToO5 := ifelse(abs(o - o5.o) >= 180, 360 - abs(o - o5.o), abs(o - o5.o))]
+tracking_full1[, OrientationDiffToO6 := ifelse(abs(o - o6.o) >= 180, 360 - abs(o - o6.o), abs(o - o6.o))]
+tracking_full1[, OrientationDiffToO7 := ifelse(abs(o - o7.o) >= 180, 360 - abs(o - o7.o), abs(o - o7.o))]
+tracking_full1[, OrientationDiffToO8 := ifelse(abs(o - o8.o) >= 180, 360 - abs(o - o8.o), abs(o - o8.o))]
+tracking_full1[, OrientationDiffToO9 := ifelse(abs(o - o9.o) >= 180, 360 - abs(o - o9.o), abs(o - o9.o))]
+tracking_full1[, OrientationDiffToO10 := ifelse(abs(o - o10.o) >= 180, 360 - abs(o - o10.o), abs(o - o10.o))]
+tracking_full1[, OrientationDiffToO11 := ifelse(abs(o - o11.o) >= 180, 360 - abs(o - o11.o), abs(o - o11.o))]
+```
+
+```{r Create Final Model/Animation Data}
+model_data <- tracking_full1[, c("gameId", "playId", "frameId", "s", "a", "DistToBall", "SpeedDiffToBC", "position", "Tackler", "OrientationDifftoBC", "DirectionDiffToBC", "NonBCOffPlayersWithin5Yards", "DefendersClosertoBall", "OrientationDiffToO1", "OrientationDiffToO2", "OrientationDiffToO3", "OrientationDiffToO4", "OrientationDiffToO5", "OrientationDiffToO6", "OrientationDiffToO7", "OrientationDiffToO8", "OrientationDiffToO9", "OrientationDiffToO10", "OrientationDiffToO11")]
+
+model_data <- left_join(model_data, tklframe, by = c("gameId" = "GameID", "playId" = "PlayID"))
+
+model_data[, FiveBeforeTkl := TklFrame - 4]
+
+model_data <- model_data[complete.cases(model_data)]
+
+rm(fullotherplayersdata)
+```
+
+```{r Test/Train / KFold / Recipe}
+train <- model_data[gameId %in% weeks1thru6$gameId] %>% select(-gameId, -playId, -frameId, -TklFrame, -FiveBeforeTkl)
+test <- model_data[gameId %in% weeks7thru9$gameId] %>% select(-gameId, -playId, -frameId, -TklFrame, -FiveBeforeTkl)
+
+recipe <- recipe(Tackler ~ ., data = train) %>% step_dummy(all_nominal_predictors())
+```
+
+```{r Win Probability Model}
+set.seed(123)
+xgb_model <- boost_tree(trees = 1000,
+                        tree_depth = 4,
+                        min_n = 23,
+                        loss_reduction = .000149,
+                        sample_size = .392,
+                        mtry = 16,
+                        learn_rate = .0000000223) %>% 
+                        set_engine("xgboost") %>% 
+                        set_mode("classification")
+
+xgb_wf <- workflow() %>%
+   add_model(xgb_model) %>%
+   add_recipe(recipe)
+
+xgb_final <- finalize_workflow(
+  xgb_wf,
+  xgb_model)
+
+set.seed(123)
+xgb_final_fit <- xgb_final %>%
+   fit(data = train)
+
+set.seed(123)
+confusion_mat <- xgb_final_fit %>% predict(test) %>% bind_cols(test %>% dplyr::select(Tackler)) %>% conf_mat(truth = Tackler, estimate = .pred_class)
+autoplot(confusion_mat, type = "heatmap") + 
+  scale_fill_gradient(low = "#D6EAF8", high = "#2E86C1")
+
+vipplot <- xgb_final_fit %>% extract_fit_parsnip() %>% vip(20)
+```
+
+```{r Conclusion Plots}
+speeddifftobc <- ggplot(model_data[Tackler == 1], aes(x = SpeedDiffToBC)) + 
+                        geom_histogram(color = "white", fill = "#013369", binwidth = 1) + 
+                        theme_minimal() +
+                        labs(x = "Tackler Speed Difference to Ball Carrier (in mph)", y = "Total Occurences (Frames)")
+
+oriendifftobc <- ggplot(model_data[Tackler == 1], aes(x = OrientationDifftoBC)) + 
+                        geom_histogram(color = "white", fill = "#D50A0A", binwidth = 10) + 
+                        theme_minimal() +
+                        labs(x = "Tackler Orientation Difference to Ball Carrier (0 to 360°)", y = "Total Occurences (Frames)")
+```

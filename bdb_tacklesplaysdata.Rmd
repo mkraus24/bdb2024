@@ -1,0 +1,33 @@
+---
+title: "Tackles / Plays Data"
+author: "Matthew Kraus"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE)
+```
+
+```{r Libraries}
+library(tidyverse)
+library(data.table)
+```
+
+```{r Data Import}
+games <- data.table(read_csv("games.csv", show_col_types = F))
+players <- data.table(read_csv("players.csv", show_col_types = F))
+plays <- data.table(read_csv("plays.csv", show_col_types = F))
+tackles <- data.table(read_csv("tackles.csv", show_col_types = F))
+```
+
+```{r Tackles / Plays Data}
+tackles_plays <- left_join(tackles, plays[, c("gameId", "playId", "ballCarrierId", "ballCarrierDisplayName")], by = c("gameId" = "gameId", "playId" = "playId"))
+
+tackles_plays <- left_join(tackles_plays, players[, c("nflId", "displayName")], by = c("nflId" = "nflId"))
+
+tackles_plays <- left_join(tackles_plays, games[, c("gameId", "week")], by = c("gameId" = "gameId"))
+
+tackles_plays <- tackles_plays %>% rename(GameID = gameId, PlayID = playId, Week = week, TacklerID = nflId, Tackle = tackle, Assist = assist, FF = forcedFumble, MissedTackle = pff_missedTackle, BallCarrierID = ballCarrierId, BallCarrier = ballCarrierDisplayName, Tackler = displayName) %>% select(GameID, PlayID, Week, TacklerID, Tackler, Tackle, Assist, FF, MissedTackle, BallCarrierID, BallCarrier)
+
+# write.csv(tackles_plays, file = "C:/Users/15622/Dropbox/PC/Desktop/Big Data Bowl 2024/bdb_tacklesplays.csv", row.names = F)
+```

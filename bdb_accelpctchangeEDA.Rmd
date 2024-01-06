@@ -1,0 +1,95 @@
+---
+title: "Accel Percent Change EDA"
+author: "Matthew Kraus"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, message = FALSE, warning = FALSE)
+```
+
+```{r Libraries}
+library(tidyverse)
+library(data.table)
+library(nflverse)
+library(ggthemes)
+```
+
+```{r Data Import}
+load("TacklerandBCAccelPctChangeData.RData")
+
+players <- data.table(read_csv("players.csv", show_col_types = F))
+tackles_plays <- data.table(read_csv("bdb_tacklesplays.csv", show_col_types = F))
+```
+
+```{r Tackler / BC Accel Pct Change Data}
+fullacceldata <- fullacceldata %>% mutate(BCAccelPctChange = BCAccelPctChange / 100, TklerAccelPctChange = TklerAccelPctChange / 100)
+
+tackleinvolvements_byplayer <- fullacceldata %>% group_by(nflID.opp) %>% summarise(TackleInvolvements = n()) %>% filter(TackleInvolvements >= 5)
+over5involvements <- fullacceldata[nflID.opp %in% tackleinvolvements_byplayer$nflID.opp]
+
+roster2022 <- data.table(nflfastR::fast_scraper_roster(2022))
+rel_roster2022 <- roster2022[,c("full_name", "gsis_id", "college", "team")]
+
+gsis_id <- left_join(players[, c("nflId", "displayName", "collegeName")], rel_roster2022, by = c("displayName" = "full_name", "collegeName" = "college"))
+
+acceldata_gsis <- left_join(over5involvements, gsis_id[, c("nflId", "gsis_id", "displayName", "team")], by = c("nflID" = "nflId")) %>% rename(GSIS = gsis_id, team.bc = team, name.bc = displayName)
+acceldata_gsis <- left_join(acceldata_gsis, gsis_id[, c("nflId", "gsis_id", "displayName", "team")], by = c("nflID.opp" = "nflId")) %>% rename(GSIS.opp = gsis_id, team.tkl = team, name.tkl = displayName)
+
+acceldata_gsiscolor <- left_join(acceldata_gsis, nflfastR::teams_colors_logos[, c("team_abbr", "team_color")], by = c("team.bc" = "team_abbr")) %>% rename(color.bc = team_color)
+acceldata_gsiscolor <- left_join(acceldata_gsiscolor, nflfastR::teams_colors_logos[, c("team_abbr", "team_color")], by = c("team.tkl" = "team_abbr")) %>% rename(color.tkl = team_color)
+
+acceldata_gsiscolor <- acceldata_gsiscolor[, c("GameID", "PlayID", "nflID", "nflID.opp", "BCAccelPctChange", "TklerAccelPctChange", "SuccessfulTkl", "GSIS", "name.bc", "team.bc", "color.bc", "GSIS.opp", "name.tkl", "team.tkl", "color.tkl")]
+
+top10involved <- fullacceldata %>% group_by(nflID.opp) %>% summarise(TackleInvolvements = n()) %>% arrange(desc(TackleInvolvements)) %>% head(10)
+
+mostinvolved_avgaccelpctchange <- acceldata_gsiscolor %>% filter(nflID.opp %in% top10involved$nflID.opp) %>% group_by(GSIS.opp, name.tkl, team.tkl, color.tkl) %>% summarise(AvgAccelPctChange = mean(TklerAccelPctChange)) %>% arrange(desc(AvgAccelPctChange)) %>% mutate(name.tkl = ifelse(name.tkl == "Foyesade Oluokun", "Foye Oluokun", name.tkl))
+
+top10_avgaccelpctchange <- acceldata_gsiscolor %>% group_by(GSIS.opp, name.tkl, team.tkl, color.tkl) %>% summarise(AvgAccelPctChange = mean(TklerAccelPctChange)) %>% arrange(desc(AvgAccelPctChange)) %>% head(10) %>% mutate(name.tkl = ifelse(name.tkl == "Cameron Heyward", "Cam Heyward", name.tkl))
+
+bottom10_avgaccelpctchange <- acceldata_gsiscolor %>% group_by(GSIS.opp, name.tkl, team.tkl, color.tkl) %>% summarise(AvgAccelPctChange = mean(TklerAccelPctChange)) %>% arrange(AvgAccelPctChange) %>% head(10)
+
+colors_top10 <- data.table(top10_avgaccelpctchange[, c("color.tkl", "AvgAccelPctChange")])
+colors_top10[, AvgAccelPctChange := as.character(AvgAccelPctChange)]
+colors_top10 <- colors_top10 %>% arrange(AvgAccelPctChange)
+
+colors_bottom10 <- data.table(bottom10_avgaccelpctchange[, c("color.tkl", "AvgAccelPctChange")])
+colors_bottom10[, AvgAccelPctChange := as.character(AvgAccelPctChange)]
+colors_bottom10 <- colors_bottom10 %>% arrange(AvgAccelPctChange)
+
+colors_mostinvolved <- data.table(mostinvolved_avgaccelpctchange[, c("color.tkl", "AvgAccelPctChange")])
+colors_mostinvolved[, AvgAccelPctChange := as.character(AvgAccelPctChange)]
+colors_mostinvolved <- colors_mostinvolved %>% arrange(AvgAccelPctChange)
+```
+
+```{r Tackler / BC Accel Pct Change EDA}
+top10plot <- ggplot(top10_avgaccelpctchange, aes(x = fct_rev(fct_reorder(GSIS.opp, AvgAccelPctChange)), y = AvgAccelPctChange)) +
+  geom_col(aes(color = as.character(top10_avgaccelpctchange$AvgAccelPctChange), fill = as.character(top10_avgaccelpctchange$AvgAccelPctChange)), width = 0.75, show.legend = F) +
+  geom_text(aes(label = top10_avgaccelpctchange$name.tkl, y = 0), vjust = 1.5, size = 1.9) +
+  scale_color_manual(values = colors_top10$color.tkl) +
+  scale_fill_manual(values = colors_top10$color.tkl) +
+  scale_y_continuous(labels = scales::percent) +
+  labs(title = "Players with Highest Acceleration % Change") +
+  theme_fivethirtyeight() +
+  theme(axis.text.x = element_nfl_headshot(size = 1.25))
+
+bottom10plot <- ggplot(bottom10_avgaccelpctchange, aes(x = fct_reorder(GSIS.opp, AvgAccelPctChange), y = AvgAccelPctChange)) +
+  geom_col(aes(color = as.character(bottom10_avgaccelpctchange$AvgAccelPctChange), fill = as.character(bottom10_avgaccelpctchange$AvgAccelPctChange)), width = 0.75, show.legend = F) +
+  geom_text(aes(label = bottom10_avgaccelpctchange$name.tkl, y = 0), vjust = -1, size = 2.25) +
+  scale_color_manual(values = colors_bottom10$color.tkl) +
+  scale_fill_manual(values = colors_bottom10$color.tkl) +
+  scale_y_continuous(labels = scales::percent) +
+  labs(title = "Players with Largest Deceleration % Change") +
+  theme_fivethirtyeight() +
+  theme(axis.text.x = element_nfl_headshot(size = 1.25))
+
+mostinvolvedplot <- ggplot(mostinvolved_avgaccelpctchange, aes(x = fct_rev(fct_reorder(GSIS.opp, AvgAccelPctChange)), y = AvgAccelPctChange)) +
+  geom_col(aes(color = as.character(mostinvolved_avgaccelpctchange$AvgAccelPctChange), fill = as.character(mostinvolved_avgaccelpctchange$AvgAccelPctChange)), width = 0.75, show.legend = F) +
+  geom_text(aes(label = mostinvolved_avgaccelpctchange$name.tkl, y = 0), vjust = 4, size = 2.25) +
+  scale_color_manual(values = colors_mostinvolved$color.tkl) +
+  scale_fill_manual(values = colors_mostinvolved$color.tkl) +
+  scale_y_continuous(labels = scales::percent) +
+  labs(title = "Acceleration % Change: Most Involved Players") +
+  theme_fivethirtyeight() +
+  theme(axis.text.x = element_nfl_headshot(size = 1.25))
+```
